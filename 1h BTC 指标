@@ -1,0 +1,162 @@
+//@version=5
+indicator('BTCUSDTPERP MEGABOT 60min', overlay=true)
+
+//Source
+source = input(close, title='Source')
+
+//ADX -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Act_ADX = input(true, title='AVERAGE DIRECTIONAL INDEX')
+ADX_options = input.string('MASANAKAMURA', title='  ADX OPTION', options=['CLASSIC', 'MASANAKAMURA'])
+ADX_len = input.int(13, title='  ADX LENGTH', minval=1)
+th = input.float(13.5, title='  ADX THRESHOLD', minval=0, step=0.5)
+
+calcADX(_len) =>
+    up = ta.change(high)
+    down = -ta.change(low)
+    plusDM = na(up) ? na : up > down and up > 0 ? up : 0
+    minusDM = na(down) ? na : down > up and down > 0 ? down : 0
+    truerange = ta.rma(ta.tr, _len)
+    _plus = fixnan(100 * ta.rma(plusDM, _len) / truerange)
+    _minus = fixnan(100 * ta.rma(minusDM, _len) / truerange)
+    sum = _plus + _minus
+    _adx = 100 * ta.rma(math.abs(_plus - _minus) / (sum == 0 ? 1 : sum), _len)
+    [_plus, _minus, _adx]
+
+calcADX_Masanakamura(_len) =>
+    SmoothedTrueRange = 0.0
+    SmoothedDirectionalMovementPlus = 0.0
+    SmoothedDirectionalMovementMinus = 0.0
+    TrueRange = math.max(math.max(high - low, math.abs(high - nz(close[1]))), math.abs(low - nz(close[1])))
+    DirectionalMovementPlus = high - nz(high[1]) > nz(low[1]) - low ? math.max(high - nz(high[1]), 0) : 0
+    DirectionalMovementMinus = nz(low[1]) - low > high - nz(high[1]) ? math.max(nz(low[1]) - low, 0) : 0
+    SmoothedTrueRange := nz(SmoothedTrueRange[1]) - nz(SmoothedTrueRange[1]) / _len + TrueRange
+    SmoothedDirectionalMovementPlus := nz(SmoothedDirectionalMovementPlus[1]) - nz(SmoothedDirectionalMovementPlus[1]) / _len + DirectionalMovementPlus
+    SmoothedDirectionalMovementMinus := nz(SmoothedDirectionalMovementMinus[1]) - nz(SmoothedDirectionalMovementMinus[1]) / _len + DirectionalMovementMinus
+    DIP = SmoothedDirectionalMovementPlus / SmoothedTrueRange * 100
+    DIM = SmoothedDirectionalMovementMinus / SmoothedTrueRange * 100
+    DX = math.abs(DIP - DIM) / (DIP + DIM) * 100
+    adx = ta.sma(DX, _len)
+    [DIP, DIM, adx]
+
+[DIPlusC, DIMinusC, ADXC] = calcADX(ADX_len)
+[DIPlusM, DIMinusM, ADXM] = calcADX_Masanakamura(ADX_len)
+DIPlus = ADX_options == 'CLASSIC' ? DIPlusC : DIPlusM
+DIMinus = ADX_options == 'CLASSIC' ? DIMinusC : DIMinusM
+ADX = ADX_options == 'CLASSIC' ? ADXC : ADXM
+
+ADX_color = DIPlus > DIMinus and ADX > th ? color.green : DIPlus < DIMinus and ADX > th ? color.red : color.orange
+barcolor(color=Act_ADX ? ADX_color : na, title='ADX')
+
+//RSI---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+len_3 = input.int(90, minval=1, title='RSI lenght')
+src_3 = input(open, 'Source')
+up_3 = ta.rma(math.max(ta.change(src_3), 0), len_3)
+down_3 = ta.rma(-math.min(ta.change(src_3), 0), len_3)
+rsi_3 = down_3 == 0 ? 100 : up_3 == 0 ? 0 : 100 - 100 / (1 + up_3 / down_3)
+
+//VOLUME-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+maLength = input.int(title='MA Length', defval=33, minval=1)
+maType = input.string(title='MA Type', defval='SMA', options=['EMA', 'SMA', 'HMA', 'WMA', 'DEMA'])
+rvolTrigger = input(title='RVOL To Trigger Signal', defval=2.1)
+
+getMA(length) =>
+    maPrice = ta.ema(volume, length)
+    if maType == 'SMA'
+        maPrice := ta.sma(volume, length)
+        maPrice
+    if maType == 'HMA'
+        maPrice := ta.hma(volume, length)
+        maPrice
+    if maType == 'WMA'
+        maPrice := ta.wma(volume, length)
+        maPrice
+    if maType == 'DEMA'
+        e1 = ta.ema(volume, length)
+        e2 = ta.ema(e1, length)
+        maPrice := 2 * e1 - e2
+        maPrice
+    maPrice
+
+ma = getMA(maLength)
+rvol = volume / ma
+
+//MACD------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+src = input(title='Source', defval=ohlc4)
+fast_length = input(title='Fast Length', defval=9)
+slow_length = input(title='Slow Length', defval=12)
+signal_length = input.int(title='Signal Smoothing', minval=1, maxval=50, defval=21)
+
+fast_ma = ta.ema(src, fast_length)
+slow_ma = ta.ema(src, slow_length)
+macd = fast_ma - slow_ma
+signal = ta.sma(macd, signal_length)
+hist = macd - signal
+bg = signal >= macd ? color.maroon : color.teal
+
+
+//STRATEGY--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Long = DIPlus > DIMinus and ADX > th and rsi_3 < 70 and volume > rvolTrigger * ma and macd > signal
+Short = DIPlus < DIMinus and ADX > th and rsi_3 > 30 and volume > rvolTrigger * ma and macd < signal
+
+
+//Signals----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+// SL AND TP-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+stopPer = input.float(7, title='Stop Loss %') / 100
+takePer = input(4.5, title='Take Profit %') / 100
+
+long_short = 0
+long_last = Long and (nz(long_short[1]) == 0 or nz(long_short[1]) == -1)
+short_last = Short and (nz(long_short[1]) == 0 or nz(long_short[1]) == 1)
+long_short := long_last ? 1 : short_last ? -1 : long_short[1]
+
+longPrice = ta.valuewhen(long_last, close, 0)
+shortPrice = ta.valuewhen(short_last, close, 0)
+
+longStop = longPrice * (1 - stopPer)
+shortStop = shortPrice * (1 + stopPer)
+longTake = longPrice * (1 + takePer)
+shortTake = shortPrice * (1 - takePer)
+
+//plot lines ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+plotshape(long_short == 1 ? longTake : na, style=shape.cross, color=color.new(color.gray, 0), location=location.absolute)
+plotshape(long_short == -1 ? shortTake : na, style=shape.cross, color=color.new(color.gray, 0), location=location.absolute)
+
+longBar1 = ta.barssince(long_last)
+longBar2 = longBar1 >= 1 ? true : false
+shortBar1 = ta.barssince(short_last)
+shortBar2 = shortBar1 >= 1 ? true : false
+
+Long_SL = long_short == 1 and longBar2 and low < longStop
+Short_SL = long_short == -1 and shortBar2 and high > shortStop
+
+Long_TP = long_short == 1 and longBar2 and high > longTake
+Short_TP = long_short == -1 and shortBar2 and low < shortTake
+
+long_short := (long_short == 1 or long_short == 0) and longBar2 and (Long_SL or Long_TP) ? 0 : (long_short == -1 or long_short == 0) and shortBar2 and (Short_SL or Short_TP) ? 0 : long_short
+
+last_long_cond = Long and long_last
+last_short_cond = Short and short_last
+
+//plotshapes---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+plotshape(last_long_cond, title='Buy', color=color.new(color.green, 0), style=shape.triangleup, location=location.belowbar, size=size.tiny, textcolor=color.new(color.black, 0))
+plotshape(last_short_cond, title='Sell', color=color.new(color.red, 0), style=shape.triangledown, location=location.abovebar, size=size.tiny, textcolor=color.new(color.black, 0))
+plotshape(Long_SL, location=location.belowbar, color=color.new(color.black, 0), size=size.tiny, text='SL', textcolor=color.new(color.fuchsia, 0))
+plotshape(Short_SL, location=location.abovebar, color=color.new(color.black, 0), size=size.tiny, text='SL', textcolor=color.new(color.fuchsia, 0))
+plotshape(Long_TP, style=shape.triangledown, location=location.abovebar, color=color.new(color.black, 0), size=size.tiny, text='TP', textcolor=color.new(color.black, 0))
+plotshape(Short_TP, style=shape.triangleup, location=location.belowbar, color=color.new(color.black, 0), size=size.tiny, text='TP', textcolor=color.new(color.black, 0))
+
+alertcondition(last_long_cond, title='Long', message='[LONG 60min]')
+alertcondition(last_short_cond, title='Short', message='[SHORT 60min]')
+alertcondition(Long_SL, title='Long SL', message='[LONG SL 60min]')
+alertcondition(Short_SL, title='Short SL', message='[SHORT SL 60min]')
+alertcondition(Long_TP, title='Long TP', message='[LONG TP 60min]')
+alertcondition(Short_TP, title='Short TP', message='[SHORT TP 60min]')
